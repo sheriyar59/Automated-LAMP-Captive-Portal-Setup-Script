@@ -13,9 +13,12 @@ This repository contains a bash script that automates the setup of a LAMP (Linux
 - **Apache Virtual Host Configuration:** Creates virtual hosts for both primary and captive portal domains.
 - **Optional SSL Setup:** Uses Let's Encrypt to secure connections with an SSL certificate.
 - **Error Handling and Logging:** Provides feedback at each step to simplify troubleshooting.
-Usage
+- ## Usage
+```
+curl -sO https://raw.githubusercontent.com/sheriyar59/Automated-LAMP-Captive-Portal-Setup-Script/refs/heads/main/setup_script.sh && sudo bash setup_script.sh
+```
+OR 
 Clone this repository:
-
 ```
 Copy code
 git clone https://github.com/sheriyar59/Automated-LAMP-Captive-Portal-Setup-Script
