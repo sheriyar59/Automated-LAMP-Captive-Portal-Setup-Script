@@ -1,8 +1,19 @@
 #!/bin/bash
 
+# Colors
+RESET='\033[0m'
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+
+# Function to print messages in color
+info() { echo -e "${GREEN}$1${RESET}"; }
+warn() { echo -e "${YELLOW}$1${RESET}"; }
+error() { echo -e "${RED}$1${RESET}"; }
+
 # Check if script is run as root
 if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root. Please run with sudo."
+    error "This script must be run as root. Please run with sudo."
     exit 1
 fi
 
@@ -11,30 +22,27 @@ read -p "Enter MySQL database name: " DB_NAME
 read -p "Enter MySQL username: " DB_USER
 read -s -p "Enter MySQL password: " DB_PASS
 echo
-echo 
-read -p "Enter your primary domain (e.g., example.com): " DOMAIN
 read -p "Enter the captive portal domain (e.g., hotspot.example.com): " DOMAIN_NAME
 read -p "Enter your email for SSL certificate registration: " EMAIL
+read -p "Enter the repository URL (e.g., https://github.com/splash-networks/mikrotik-yt-radius-portal): " REPO_URL
 
 # Set additional variables
 WEB_ROOT="/var/www"
-REPO_URL="https://github.com/splash-networks/mikrotik-yt-radius-portal"
 ENV_FILE="$WEB_ROOT/$DOMAIN_NAME/.env"
 APACHE_CONF_PATH="/etc/apache2/sites-available/$DOMAIN_NAME.conf"
 COMPOSER_INSTALL_URL="https://getcomposer.org/installer"
 
 # Update and upgrade the system
-echo "Updating and upgrading the system..."
-sudo apt update && sudo apt upgrade -y
+info "Updating and upgrading the system..."
+sudo apt update > /dev/null 2>&1 && sudo apt upgrade -y > /dev/null 2>&1 || error "Failed to update and upgrade the system."
 
 # Install Apache, PHP, and required packages
-echo "Installing Apache, PHP, and other dependencies..."
-sudo apt install -y apache2 nano curl php php-pear php-curl php-dev php-xml php-gd php-mbstring php-zip php-mysql php-xmlrpc libapache2-mod-php mysql-server git certbot python3-certbot-apache
+info "Installing Apache, PHP, and other dependencies..."
+sudo apt install -y apache2 nano curl php php-mbstring php-mysql mysql-server git certbot python3-certbot-apache > /dev/null 2>&1 || error "Failed to install dependencies."
 
 # Secure MySQL installation
-echo "Securing MySQL installation..."
+info "Securing MySQL installation..."
 sudo mysql_secure_installation <<EOF
-
 n
 y
 y
@@ -43,69 +51,70 @@ y
 EOF
 
 # MySQL setup: create database and user
-echo "Creating MySQL database and user..."
-sudo mysql -u root <<MYSQL
+info "Creating MySQL database and user..."
+if ! sudo mysql -u root -e "
 CREATE DATABASE IF NOT EXISTS $DB_NAME;
 CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
 GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
-FLUSH PRIVILEGES;
-MYSQL
+FLUSH PRIVILEGES;" 2>/dev/null; then
+    error "Failed to create MySQL database and user."
+    exit 1
+fi
 
-# Uninstall component_validate_password
-echo "Uninstalling component_validate_password..."
-sudo mysql -u root <<MYSQL
-UNINSTALL COMPONENT "file://component_validate_password";
-MYSQL
+# Uninstall component_validate_password with if-else
+COMPONENT_STATUS=$(sudo mysql -u root -e "SELECT * FROM mysql.component WHERE component_urn='file://component_validate_password';" 2>/dev/null)
+if [[ -n "$COMPONENT_STATUS" ]]; then
+    info "Uninstalling component_validate_password..."
+    sudo mysql -u root -e "UNINSTALL COMPONENT 'file://component_validate_password';" > /dev/null 2>&1
+else
+    warn "component_validate_password is not installed."
+fi
 
-# phpmyadmin setup: 
-
-sudo apt install -y phpmyadmin
+# Install phpMyAdmin if the user opted for it
+info "Installing phpMyAdmin..."
+{
+    echo "phpmyadmin phpmyadmin/dbconfig-install boolean true"
+    echo "phpmyadmin phpmyadmin/app-password-confirm password $DB_PASS"
+    echo "phpmyadmin phpmyadmin/mysql/admin-pass password $DB_PASS"
+    echo "phpmyadmin phpmyadmin/mysql/app-pass password $DB_PASS"
+    echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2"
+} | sudo debconf-set-selections
+sudo apt install -y phpmyadmin > /dev/null 2>&1 || error "Failed to install phpMyAdmin."
 
 # Clone the portal repository
-echo "Cloning the portal repository..."
-sudo git clone $REPO_URL $WEB_ROOT/$DOMAIN_NAME
+info "Cloning the portal repository..."
+sudo git clone $REPO_URL $WEB_ROOT/$DOMAIN_NAME > /dev/null 2>&1 || error "Failed to clone repository."
 
 # Copy .env.example to .env
-echo "Setting up environment variables..."
+info "Setting up environment variables..."
 if [ -f "$WEB_ROOT/$DOMAIN_NAME/.env.example" ]; then
-  sudo cp "$WEB_ROOT/$DOMAIN_NAME/.env.example" "$ENV_FILE"
-  echo "Edit the .env file to configure environment variables."
+    sudo cp "$WEB_ROOT/$DOMAIN_NAME/.env.example" "$ENV_FILE"
+    info "Environment file copied. Configure variables in $ENV_FILE."
 else
-  echo ".env.example not found in the repository."
+    error ".env.example not found in the repository."
 fi
 
 # Install Composer
-echo "Installing Composer..."
+info "Installing Composer..."
 curl -sS $COMPOSER_INSTALL_URL -o composer-setup.php
-sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
-rm composer-setup.php
+sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer > /dev/null 2>&1
+rm composer-setup.php || error "Failed to install Composer."
 
 # Run Composer install to install dependencies
-echo "Running Composer to install dependencies..."
-cd "$WEB_ROOT/$DOMAIN_NAME"
-sudo php /usr/local/bin/composer install
+info "Running Composer to install dependencies..."
+cd "$WEB_ROOT/$DOMAIN_NAME/public" || exit
 
-# Apache site setup for the primary domain
-APACHE_PRIMARY_CONF="/etc/apache2/sites-available/$DOMAIN.conf"
-if [ ! -f "$APACHE_PRIMARY_CONF" ]; then
-    echo "Creating Apache virtual host for primary domain $DOMAIN..."
-    sudo tee "$APACHE_PRIMARY_CONF" > /dev/null <<EOF
-<VirtualHost *:80>
-    ServerName $DOMAIN
-    ServerAdmin webmaster@$DOMAIN
-    DocumentRoot /var/www/$DOMAIN
-    ErrorLog \${APACHE_LOG_DIR}/error.log
-    CustomLog \${APACHE_LOG_DIR}/access.log combined
-</VirtualHost>
-EOF
-    sudo mkdir -p /var/www/$DOMAIN
-    sudo a2ensite $DOMAIN.conf
-    sudo a2dissite 000-default.conf
+# Run Composer with debug output
+if ! composer install; then
+    error "Composer failed to install dependencies."
+    echo "Debugging output for Composer installation:"
+    composer install --verbose
+    exit 1
 fi
 
 # Apache site setup for the captive portal domain
 if [ ! -f "$APACHE_CONF_PATH" ]; then
-    echo "Configuring Apache Virtual Host for captive portal domain $DOMAIN_NAME..."
+    info "Configuring Apache Virtual Host for captive portal domain $DOMAIN_NAME..."
     sudo tee "$APACHE_CONF_PATH" > /dev/null <<EOL
 <VirtualHost *:80>
     ServerName $DOMAIN_NAME
@@ -121,13 +130,11 @@ if [ ! -f "$APACHE_CONF_PATH" ]; then
 </VirtualHost>
 EOL
 
-    # Enable the site and reload Apache
-    echo "Enabling captive portal site and reloading Apache..."
-    sudo a2ensite $DOMAIN_NAME.conf
+    sudo a2ensite $DOMAIN_NAME.conf > /dev/null 2>&1
 fi
 
 # Web Security Configuration
-echo "Configuring basic web security..."
+info "Configuring basic web security..."
 sudo tee -a /etc/apache2/apache2.conf > /dev/null <<EOF
 
 <Directory /var/www/>
@@ -140,12 +147,10 @@ sudo tee -a /etc/apache2/apache2.conf > /dev/null <<EOF
     Deny from all
 </Files>
 EOF
-
-# Restart Apache to apply web security settings
-sudo systemctl reload apache2
+sudo systemctl reload apache2 > /dev/null 2>&1
 
 # Obtain SSL Certificates with Let's Encrypt
-echo "Obtaining SSL certificates for $DOMAIN and $DOMAIN_NAME..."
-sudo certbot --apache -d $DOMAIN -d $DOMAIN_NAME --agree-tos --non-interactive --email $EMAIL
+info "Obtaining SSL certificates for $DOMAIN_NAME..."
+sudo certbot --apache -d $DOMAIN_NAME --agree-tos --non-interactive --email $EMAIL > /dev/null 2>&1
 
-echo "Setup complete! Please check the configuration and ensure environment variables are set in $ENV_FILE."
+info "Setup complete! Please configure environment variables in $ENV_FILE."
