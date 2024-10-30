@@ -83,7 +83,20 @@ sudo apt install -y phpmyadmin > /dev/null 2>&1 || error "Failed to install phpM
 
 # Clone the portal repository
 info "Cloning the portal repository..."
-sudo git clone $REPO_URL $WEB_ROOT/$DOMAIN_NAME > /dev/null 2>&1 || error "Failed to clone repository."
+# Check if the repository is public by trying an unauthenticated request
+if git ls-remote "$REPO_URL" > /dev/null 2>&1; then
+    # Repository is public
+    sudo git clone "$REPO_URL" "$WEB_ROOT/$DOMAIN_NAME" > /dev/null 2>&1 || error "Failed to clone repository."
+else
+    # Repository is private; prompt for credentials
+    read -p "Enter your GitHub username: " GITHUB_USER
+    read -s -p "Enter your GitHub personal access token: " GITHUB_TOKEN
+    echo
+    REPO_URL_WITH_AUTH="https://$GITHUB_USER:$GITHUB_TOKEN@${REPO_URL#https://}"
+    
+    sudo git clone "$REPO_URL_WITH_AUTH" "$WEB_ROOT/$DOMAIN_NAME" > /dev/null 2>&1 || error "Failed to clone repository. Check your credentials."
+fi
+
 
 # Copy .env.example to .env
 info "Setting up environment variables..."
